@@ -1,0 +1,5 @@
+# Build artifacts & local runtime config
+*.exe
+*.obj
+*.o
+spotter_overlay.ini
