@@ -95,9 +95,9 @@ constexpr float MAX_FRAME_JUMP_M   = 8.5f;   // Continuity gate for extreme spee
 constexpr float EDGE_CAP_FRAC          = 0.07f;  // 7% warning cap when approaching/clearing
 
 constexpr float FRONT_BAR_X            = 76.0f;
-constexpr float FRONT_BAR_Y            = 25.0f;
-constexpr float FRONT_BAR_WIDTH        = WIN_WIDTH - 2.0f * FRONT_BAR_X; // 368.0f horizontal span between L/R pillars
 constexpr float FRONT_BAR_HEIGHT       = 22.0f;
+constexpr float FRONT_BAR_Y            = BAR_TOP_Y + BAR_HEIGHT - FRONT_BAR_HEIGHT; // Bottom-aligned (y = 293..315)
+constexpr float FRONT_BAR_WIDTH        = WIN_WIDTH - 2.0f * FRONT_BAR_X; // 368.0f horizontal span between L/R pillars
 constexpr float FRONT_DRAFT_MAX_GAP_M  = 3.50f;  // Activate front bonnet bar when nose-to-tail gap <= 3.50m
 constexpr float FRONT_PULLOUT_GAP_M    = 1.20f;  // Amber "Pull Out Now" threshold <= 1.20m
 constexpr float FRONT_DANGER_GAP_M     = 0.35f;  // Red "Bonnet Contact Imminent" threshold <= 0.35m
