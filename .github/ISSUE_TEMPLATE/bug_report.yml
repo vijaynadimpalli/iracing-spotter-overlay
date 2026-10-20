@@ -1,0 +1,58 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Join a ... session in ...
+        2. Pull alongside ...
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Overlay version
+      description: Release version or commit hash
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2
+    validations:
+      required: true
+  - type: dropdown
+    id: display-mode
+    attributes:
+      label: iRacing display mode
+      options:
+        - Borderless windowed
+        - Windowed
+        - Fullscreen
+        - Triple screen
+        - VR
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: cars
+    attributes:
+      label: Car(s) involved
+      description: Your car and the opponent's car, if relevant
+  - type: textarea
+    id: ini
+    attributes:
+      label: Contents of spotter_overlay.ini
+      description: Paste the file (it contains only position, mute and car lengths).
+      render: ini
