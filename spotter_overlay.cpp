@@ -1292,7 +1292,7 @@ static HICON CreateSpotterTrayIcon() {
     return hIcon ? hIcon : LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
 }
 
-static void AddOrUpdateTrayIcon(HWND hwnd, bool isAdd) {
+static void AddOrUpdateTrayIcon(HWND hwnd, bool isAdd, bool showBalloon = false) {
     if (!g_app.hTrayIcon) {
         g_app.hTrayIcon = CreateSpotterTrayIcon();
     }
@@ -1304,7 +1304,15 @@ static void AddOrUpdateTrayIcon(HWND hwnd, bool isAdd) {
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon            = g_app.hTrayIcon;
     wcscpy_s(nid.szTip, L"iRacing Spotter Overlay (Click for Menu)");
-    Shell_NotifyIconW(isAdd ? NIM_ADD : NIM_MODIFY, &nid);
+    if (showBalloon) {
+        nid.uFlags |= NIF_INFO;
+        wcscpy_s(nid.szInfoTitle, L"iRacing Spotter Overlay");
+        wcscpy_s(nid.szInfo,      L"Running in system tray. Click the tray icon for settings or Exit.");
+        nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+    }
+    if (!Shell_NotifyIconW(isAdd ? NIM_ADD : NIM_MODIFY, &nid) && isAdd) {
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
 }
 
 static void RemoveTrayIcon(HWND hwnd) {
@@ -1508,26 +1516,36 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         }
     }
 
-    if (lpCmdLine && std::strstr(lpCmdLine, "--quit") != nullptr) {
-        if (HWND hExisting = FindWindowW(L"IRSpotterMicroOverlay", nullptr)) {
+    auto closeExistingInstances = []() {
+        const DWORD selfPid = GetCurrentProcessId();
+        for (int attempt = 0; attempt < 6; ++attempt) {
+            HWND hExisting = FindWindowW(L"IRSpotterMicroOverlay", nullptr);
+            if (!hExisting) break;
+
+            DWORD oldPid = 0;
+            DWORD oldTid = GetWindowThreadProcessId(hExisting, &oldPid);
+            if (oldPid == 0 || oldPid == selfPid) break;
+
             PostMessageW(hExisting, WM_CLOSE, 0, 0);
-        }
-        return 0;
-    }
+            if (oldTid != 0) {
+                PostThreadMessageW(oldTid, WM_QUIT, 0, 0);
+            }
+            SendMessageTimeoutW(hExisting, WM_DESTROY, 0, 0, SMTO_ABORTIFHUNG | SMTO_NORMAL, 250, nullptr);
+            Sleep(80);
 
-    // Ensure only a single instance runs on the interactive desktop (replace previous instance if --replace is passed)
-    if (HWND hExisting = FindWindowW(L"IRSpotterMicroOverlay", nullptr)) {
-        if (lpCmdLine && std::strstr(lpCmdLine, "--replace") != nullptr) {
-            SendMessageTimeoutW(hExisting, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 1500, nullptr);
-            Sleep(150);
-        } else {
-            return 0;
+            if (IsWindow(hExisting)) {
+                if (HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, oldPid)) {
+                    TerminateProcess(hProc, 0);
+                    WaitForSingleObject(hProc, 500);
+                    CloseHandle(hProc);
+                }
+            }
         }
-    }
+    };
 
-    HANDLE hSingleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\IRacingSpotterOverlaySingleton");
-    if (hSingleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        CloseHandle(hSingleInstanceMutex);
+    closeExistingInstances();
+
+    if (lpCmdLine && std::strstr(lpCmdLine, "--quit") != nullptr) {
         return 0;
     }
 
@@ -1560,7 +1578,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     HWND hwnd = CreateWindowExW(exStyle, wc.lpszClassName, L"iRacing Spotter", WS_POPUP,
                                 posX, posY, WIN_WIDTH, WIN_HEIGHT, nullptr, nullptr, hInst, nullptr);
 
-    AddOrUpdateTrayIcon(hwnd, true);
+    AddOrUpdateTrayIcon(hwnd, true, true);
     SaveWindowConfig(hwnd, muted);
 
     LayeredCanvas canvas{};
