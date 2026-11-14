@@ -449,6 +449,45 @@ static void Test_FrontBonnetDraftPullOutAndHandoff() {
     EXPECT_TRUE(front.zone == FrontZone::PullOut, "Multi-class GTP ahead: Triggers PullOut warning earlier than shorter car");
 }
 
+// ============================================================================
+// TEST 10: System Tray Icon Synthesis & Windows Startup Registry Toggle
+// ============================================================================
+static void Test_AutoStartRegistryAndTrayIcon() {
+    std::printf("[RUN ] Test_AutoStartRegistryAndTrayIcon\n");
+
+    // 1. Quoted auto-start command formatting
+    wchar_t cmdBuf[MAX_PATH] = {};
+    EXPECT_TRUE(FormatAutoStartCommand(L"C:\\Sim\\spotter_overlay.exe", cmdBuf, MAX_PATH),
+                "FormatAutoStartCommand succeeds on valid path");
+    EXPECT_TRUE(std::wcscmp(cmdBuf, L"\"C:\\Sim\\spotter_overlay.exe\"") == 0,
+                "FormatAutoStartCommand wraps executable path in double quotes");
+    EXPECT_TRUE(!FormatAutoStartCommand(L"", cmdBuf, MAX_PATH),
+                "FormatAutoStartCommand rejects empty path");
+
+    // 2. Enable / Verify / Disable auto-start in isolated HKCU test registry key
+    constexpr const wchar_t* kTestSubKey = L"Software\\iRacingSpotterOverlay_UnitTest_Run";
+    constexpr const wchar_t* kTestVal    = L"TestSpotterAutoStart";
+    SetAutoStartEnabled(false, nullptr, HKEY_CURRENT_USER, kTestSubKey, kTestVal);
+    EXPECT_TRUE(!IsAutoStartEnabled(HKEY_CURRENT_USER, kTestSubKey, kTestVal),
+                "Auto-start initially disabled in test registry key");
+
+    EXPECT_TRUE(SetAutoStartEnabled(true, L"C:\\Sim\\spotter_overlay.exe", HKEY_CURRENT_USER, kTestSubKey, kTestVal),
+                "SetAutoStartEnabled(true) succeeds");
+    EXPECT_TRUE(IsAutoStartEnabled(HKEY_CURRENT_USER, kTestSubKey, kTestVal),
+                "IsAutoStartEnabled returns true after enabling");
+
+    EXPECT_TRUE(SetAutoStartEnabled(false, nullptr, HKEY_CURRENT_USER, kTestSubKey, kTestVal),
+                "SetAutoStartEnabled(false) succeeds");
+    EXPECT_TRUE(!IsAutoStartEnabled(HKEY_CURRENT_USER, kTestSubKey, kTestVal),
+                "IsAutoStartEnabled returns false after disabling");
+    RegDeleteKeyW(HKEY_CURRENT_USER, kTestSubKey);
+
+    // 3. Procedural 32x32 ARGB tray icon creation
+    HICON hIcon = CreateSpotterTrayIcon();
+    EXPECT_TRUE(hIcon != nullptr, "CreateSpotterTrayIcon synthesizes valid HICON");
+    if (hIcon) DestroyIcon(hIcon);
+}
+
 int main() {
     std::printf("============================================================\n");
     std::printf(" Running iRacing Spotter Overlay Unit & Integration Tests\n");
@@ -463,6 +502,7 @@ int main() {
     Test_ThreeWideAndStackedMultiClass();
     Test_PitRoadAndPaceCarFiltering();
     Test_FrontBonnetDraftPullOutAndHandoff();
+    Test_AutoStartRegistryAndTrayIcon();
 
     std::printf("============================================================\n");
     if (g_failedTests == 0) {

@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <mmsystem.h>
+#include <shellapi.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,8 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 // ============================================================================
 // 1. EMBEDDED IRACING SHARED MEMORY DEFINITIONS
@@ -1148,16 +1151,173 @@ private:
 };
 
 // ============================================================================
-// 9. OVERLAY WINDOW STATE, PERSISTENCE & WNDPROC
+// 9. OVERLAY WINDOW STATE, SYSTEM TRAY, AUTO-START & WNDPROC
 // ============================================================================
+constexpr UINT WM_TRAYICON        = WM_APP + 1;
+constexpr UINT IDM_TRAY_MOVE      = 1001;
+constexpr UINT IDM_TRAY_MUTE      = 1002;
+constexpr UINT IDM_TRAY_AUTOSTART = 1003;
+constexpr UINT IDM_TRAY_EXIT      = 1004;
+
+constexpr const wchar_t* kAutoStartRegSubKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr const wchar_t* kAutoStartValueName = L"iRacingSpotterOverlay";
+
 struct OverlayAppState {
-    bool              moveMode    = false;
-    bool              dirtyRedraw = true;
+    bool              moveMode        = false;
+    bool              dirtyRedraw     = true;
+    bool              startWithWin    = true;
+    UINT              msgTaskbarReset = 0;
+    HICON             hTrayIcon       = nullptr;
     wchar_t           iniPath[MAX_PATH] = {};
     StereoChimeEngine chime{};
 };
 
 static OverlayAppState g_app;
+
+static bool FormatAutoStartCommand(const wchar_t* exePath, wchar_t* outBuf, size_t outCap) {
+    if (!exePath || exePath[0] == L'\0' || !outBuf || outCap < 4) return false;
+    size_t len = wcslen(exePath);
+    if (len + 3 > outCap) return false;
+    outBuf[0] = L'"';
+    std::memcpy(outBuf + 1, exePath, len * sizeof(wchar_t));
+    outBuf[len + 1] = L'"';
+    outBuf[len + 2] = L'\0';
+    return true;
+}
+
+static bool IsAutoStartEnabled(HKEY hRoot             = HKEY_CURRENT_USER,
+                               const wchar_t* subKey  = kAutoStartRegSubKey,
+                               const wchar_t* valName = kAutoStartValueName) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(hRoot, subKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    wchar_t valBuf[MAX_PATH + 16] = {};
+    DWORD   type   = 0;
+    DWORD   cbData = sizeof(valBuf);
+    LONG    res    = RegQueryValueExW(hKey, valName, nullptr, &type,
+                                      reinterpret_cast<LPBYTE>(valBuf), &cbData);
+    RegCloseKey(hKey);
+    return (res == ERROR_SUCCESS && type == REG_SZ && valBuf[0] != L'\0');
+}
+
+static bool SetAutoStartEnabled(bool enable,
+                                const wchar_t* customExePath = nullptr,
+                                HKEY hRoot                   = HKEY_CURRENT_USER,
+                                const wchar_t* subKey        = kAutoStartRegSubKey,
+                                const wchar_t* valName       = kAutoStartValueName) {
+    if (enable) {
+        wchar_t exePath[MAX_PATH] = {};
+        if (customExePath && customExePath[0] != L'\0') {
+            wcscpy_s(exePath, MAX_PATH, customExePath);
+        } else {
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        }
+        wchar_t cmdBuf[MAX_PATH + 8] = {};
+        if (!FormatAutoStartCommand(exePath, cmdBuf, MAX_PATH + 8)) return false;
+
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(hRoot, subKey, 0, nullptr, REG_OPTION_NON_VOLATILE,
+                            KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS) {
+            return false;
+        }
+        DWORD cbData = static_cast<DWORD>((wcslen(cmdBuf) + 1) * sizeof(wchar_t));
+        LONG  res    = RegSetValueExW(hKey, valName, 0, REG_SZ,
+                                      reinterpret_cast<const BYTE*>(cmdBuf), cbData);
+        RegCloseKey(hKey);
+        return (res == ERROR_SUCCESS);
+    } else {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(hRoot, subKey, 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+            return true;
+        }
+        LONG res = RegDeleteValueW(hKey, valName);
+        RegCloseKey(hKey);
+        return (res == ERROR_SUCCESS || res == ERROR_FILE_NOT_FOUND);
+    }
+}
+
+static HICON CreateSpotterTrayIcon() {
+    constexpr int ICON_SZ = 32;
+    BITMAPV5HEADER bi = {};
+    bi.bV5Size        = sizeof(BITMAPV5HEADER);
+    bi.bV5Width       = ICON_SZ;
+    bi.bV5Height      = -ICON_SZ; // Top-down
+    bi.bV5Planes      = 1;
+    bi.bV5BitCount    = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask     = 0x00FF0000;
+    bi.bV5GreenMask   = 0x0000FF00;
+    bi.bV5BlueMask    = 0x000000FF;
+    bi.bV5AlphaMask   = 0xFF000000;
+
+    HDC       hdc    = GetDC(nullptr);
+    uint32_t* pixels = nullptr;
+    HBITMAP   hColor = CreateDIBSection(hdc, reinterpret_cast<BITMAPINFO*>(&bi),
+                                        DIB_RGB_COLORS, reinterpret_cast<void**>(&pixels), nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+    if (!hColor || !pixels) return LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+
+    for (int y = 0; y < ICON_SZ; ++y) {
+        for (int x = 0; x < ICON_SZ; ++x) {
+            uint32_t px = 0x00000000;
+            if (x >= 1 && x <= 30 && y >= 1 && y <= 30) {
+                bool cornerCut = (x == 1 || x == 30) && (y == 1 || y == 30);
+                if (!cornerCut) {
+                    bool isBorder = (x == 1 || x == 30 || y == 1 || y == 30);
+                    px = isBorder ? 0xFF4B5564 : 0xFF141820;
+                }
+            }
+            // Left & Right vertical spotter bars (bright orange)
+            if (((x >= 4 && x <= 8) || (x >= 23 && x <= 27)) && (y >= 5 && y <= 26)) {
+                px = 0xFFFF9100;
+            }
+            // Bottom horizontal draft bar (cyan-green)
+            if ((x >= 11 && x <= 20) && (y >= 22 && y <= 26)) {
+                px = 0xFF00E1AF;
+            }
+            pixels[y * ICON_SZ + x] = px;
+        }
+    }
+
+    HBITMAP hMask = CreateBitmap(ICON_SZ, ICON_SZ, 1, 1, nullptr);
+    ICONINFO ii   = {};
+    ii.fIcon      = TRUE;
+    ii.hbmMask    = hMask;
+    ii.hbmColor   = hColor;
+    HICON hIcon   = CreateIconIndirect(&ii);
+
+    DeleteObject(hColor);
+    if (hMask) DeleteObject(hMask);
+    return hIcon ? hIcon : LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+}
+
+static void AddOrUpdateTrayIcon(HWND hwnd, bool isAdd) {
+    if (!g_app.hTrayIcon) {
+        g_app.hTrayIcon = CreateSpotterTrayIcon();
+    }
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize           = sizeof(NOTIFYICONDATAW);
+    nid.hWnd             = hwnd;
+    nid.uID              = 1;
+    nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon            = g_app.hTrayIcon;
+    wcscpy_s(nid.szTip, L"iRacing Spotter Overlay (Click for Menu)");
+    Shell_NotifyIconW(isAdd ? NIM_ADD : NIM_MODIFY, &nid);
+}
+
+static void RemoveTrayIcon(HWND hwnd) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd   = hwnd;
+    nid.uID    = 1;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    if (g_app.hTrayIcon) {
+        DestroyIcon(g_app.hTrayIcon);
+        g_app.hTrayIcon = nullptr;
+    }
+}
 
 static void InitConfigPath() {
     GetModuleFileNameW(nullptr, g_app.iniPath, MAX_PATH);
@@ -1170,25 +1330,27 @@ static void InitConfigPath() {
     wcscpy_s(g_iniPath, MAX_PATH, g_app.iniPath);
 }
 
-static bool LoadWindowConfig(int& inoutX, int& inoutY, bool& outMuted) {
+static bool LoadWindowConfig(int& inoutX, int& inoutY, bool& outMuted, bool& outStartWithWin) {
     DWORD attrs = GetFileAttributesW(g_app.iniPath);
     bool exists = (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY));
-    inoutX   = GetPrivateProfileIntW(L"Overlay", L"PosX", inoutX, g_app.iniPath);
-    inoutY   = GetPrivateProfileIntW(L"Overlay", L"PosY", inoutY, g_app.iniPath);
-    outMuted = GetPrivateProfileIntW(L"Overlay", L"Muted", 0,     g_app.iniPath) != 0;
+    inoutX          = GetPrivateProfileIntW(L"Overlay", L"PosX",             inoutX, g_app.iniPath);
+    inoutY          = GetPrivateProfileIntW(L"Overlay", L"PosY",             inoutY, g_app.iniPath);
+    outMuted        = GetPrivateProfileIntW(L"Overlay", L"Muted",            0,      g_app.iniPath) != 0;
+    outStartWithWin = GetPrivateProfileIntW(L"Overlay", L"StartWithWindows", 1,      g_app.iniPath) != 0;
     return exists;
 }
 
 static void SaveWindowConfig(HWND hwnd, bool muted) {
     RECT rc{};
-    if (GetWindowRect(hwnd, &rc)) {
+    if (hwnd && GetWindowRect(hwnd, &rc)) {
         wchar_t buf[32];
         wsprintfW(buf, L"%d", static_cast<int>(rc.left));
         WritePrivateProfileStringW(L"Overlay", L"PosX", buf, g_app.iniPath);
         wsprintfW(buf, L"%d", static_cast<int>(rc.top));
         WritePrivateProfileStringW(L"Overlay", L"PosY", buf, g_app.iniPath);
     }
-    WritePrivateProfileStringW(L"Overlay", L"Muted", muted ? L"1" : L"0", g_app.iniPath);
+    WritePrivateProfileStringW(L"Overlay", L"Muted",            muted               ? L"1" : L"0", g_app.iniPath);
+    WritePrivateProfileStringW(L"Overlay", L"StartWithWindows", g_app.startWithWin  ? L"1" : L"0", g_app.iniPath);
 }
 
 static void SetOverlayMoveMode(HWND hwnd, bool enableMove) {
@@ -1210,7 +1372,36 @@ static void SetOverlayMoveMode(HWND hwnd, bool enableMove) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
+static void ShowTrayContextMenu(HWND hwnd) {
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu) return;
+
+    const bool autoStart = IsAutoStartEnabled();
+    g_app.startWithWin   = autoStart;
+
+    AppendMenuW(hMenu, MF_STRING | (g_app.moveMode ? MF_CHECKED : MF_UNCHECKED),
+                IDM_TRAY_MOVE, L"Unlock / Move HUD\tCtrl+Shift+M");
+    AppendMenuW(hMenu, MF_STRING | (g_app.chime.isMuted() ? MF_CHECKED : MF_UNCHECKED),
+                IDM_TRAY_MUTE, L"Mute Audio Chimes\tCtrl+Shift+A");
+    AppendMenuW(hMenu, MF_STRING | (autoStart ? MF_CHECKED : MF_UNCHECKED),
+                IDM_TRAY_AUTOSTART, L"Start with Windows");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, L"Exit");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, nullptr);
+    PostMessageW(hwnd, WM_NULL, 0, 0);
+    DestroyMenu(hMenu);
+}
+
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_app.msgTaskbarReset != 0 && msg == g_app.msgTaskbarReset) {
+        AddOrUpdateTrayIcon(hwnd, true);
+        return 0;
+    }
+
     switch (msg) {
     case WM_MOUSEACTIVATE:
         // Never steal focus or switch Windows desktops away from iRacing when clicked
@@ -1250,7 +1441,42 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_TRAYICON:
+        if (lParam == WM_RBUTTONUP || lParam == WM_LBUTTONUP || lParam == WM_CONTEXTMENU) {
+            ShowTrayContextMenu(hwnd);
+        } else if (lParam == WM_LBUTTONDBLCLK) {
+            SetOverlayMoveMode(hwnd, !g_app.moveMode);
+        }
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDM_TRAY_MOVE:
+            SetOverlayMoveMode(hwnd, !g_app.moveMode);
+            return 0;
+        case IDM_TRAY_MUTE: {
+            bool newMuted = !g_app.chime.isMuted();
+            g_app.chime.setMuted(newMuted);
+            SaveWindowConfig(hwnd, newMuted);
+            if (!newMuted) g_app.chime.playLeft();
+            return 0;
+        }
+        case IDM_TRAY_AUTOSTART: {
+            bool newAutoStart = !IsAutoStartEnabled();
+            if (SetAutoStartEnabled(newAutoStart)) {
+                g_app.startWithWin = newAutoStart;
+                SaveWindowConfig(hwnd, g_app.chime.isMuted());
+            }
+            return 0;
+        }
+        case IDM_TRAY_EXIT:
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+
     case WM_DESTROY:
+        RemoveTrayIcon(hwnd);
         PostQuitMessage(0);
         return 0;
     }
@@ -1261,7 +1487,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 // 10. MAIN LOOP
 // ============================================================================
 #ifndef SPOTTER_TEST_BUILD
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // If launched from a sandboxed non-interactive desktop (e.g. "exebox-*"), relaunch onto "WinSta0\\Default"
     HDESK hCurDesk = GetThreadDesktop(GetCurrentThreadId());
     wchar_t deskName[128] = {};
@@ -1273,7 +1499,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
             STARTUPINFOW si = { sizeof(si) };
             si.lpDesktop = const_cast<LPWSTR>(L"WinSta0\\Default");
             PROCESS_INFORMATION pi = {};
-            if (CreateProcessW(exePath, nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            if (CreateProcessW(exePath, GetCommandLineW(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
                 WaitForSingleObject(pi.hProcess, INFINITE);
                 CloseHandle(pi.hThread);
                 CloseHandle(pi.hProcess);
@@ -1282,17 +1508,45 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         }
     }
 
+    if (lpCmdLine && std::strstr(lpCmdLine, "--quit") != nullptr) {
+        if (HWND hExisting = FindWindowW(L"IRSpotterMicroOverlay", nullptr)) {
+            PostMessageW(hExisting, WM_CLOSE, 0, 0);
+        }
+        return 0;
+    }
+
+    // Ensure only a single instance runs on the interactive desktop (replace previous instance if --replace is passed)
+    if (HWND hExisting = FindWindowW(L"IRSpotterMicroOverlay", nullptr)) {
+        if (lpCmdLine && std::strstr(lpCmdLine, "--replace") != nullptr) {
+            SendMessageTimeoutW(hExisting, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 1500, nullptr);
+            Sleep(150);
+        } else {
+            return 0;
+        }
+    }
+
+    HANDLE hSingleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\IRacingSpotterOverlaySingleton");
+    if (hSingleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(hSingleInstanceMutex);
+        return 0;
+    }
+
     // Enable native 1:1 physical pixel rendering on high-DPI monitors (1440p / 4K)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     InitConfigPath();
+    g_app.msgTaskbarReset = RegisterWindowMessageW(L"TaskbarCreated");
 
-    int  screenW   = GetSystemMetrics(SM_CXSCREEN);
-    int  screenH   = GetSystemMetrics(SM_CYSCREEN);
-    int  posX      = (screenW - WIN_WIDTH) / 2;
-    int  posY      = (screenH - WIN_HEIGHT) / 2;
-    bool muted     = false;
-    bool hasConfig = LoadWindowConfig(posX, posY, muted);
+    int  screenW      = GetSystemMetrics(SM_CXSCREEN);
+    int  screenH      = GetSystemMetrics(SM_CYSCREEN);
+    int  posX         = (screenW - WIN_WIDTH) / 2;
+    int  posY         = (screenH - WIN_HEIGHT) / 2;
+    bool muted        = false;
+    bool startWithWin = true;
+    bool hasConfig    = LoadWindowConfig(posX, posY, muted, startWithWin);
+
+    g_app.startWithWin = startWithWin;
+    SetAutoStartEnabled(startWithWin);
 
     g_app.chime.init();
     g_app.chime.setMuted(muted);
@@ -1305,6 +1559,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     HWND hwnd = CreateWindowExW(exStyle, wc.lpszClassName, L"iRacing Spotter", WS_POPUP,
                                 posX, posY, WIN_WIDTH, WIN_HEIGHT, nullptr, nullptr, hInst, nullptr);
+
+    AddOrUpdateTrayIcon(hwnd, true);
+    SaveWindowConfig(hwnd, muted);
 
     LayeredCanvas canvas{};
     if (!canvas.init(WIN_WIDTH, WIN_HEIGHT)) return 1;

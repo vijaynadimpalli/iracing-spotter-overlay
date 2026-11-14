@@ -70,13 +70,13 @@ The two small white ticks mark the 1.20 m "pull out" threshold. The bar disappea
 
 | Hotkey / Action | Function |
 | :--- | :--- |
+| **System Tray Icon** *(left/right-click)* | Open menu: **Unlock / Move HUD**, **Mute Audio Chimes**, **Start with Windows**, **Exit** |
+| **System Tray Icon** *(double-click)* | Toggle HUD Move Mode |
 | `Ctrl + Shift + M` | Unlock / lock the HUD (Move Mode) |
 | Left-click + drag *(while unlocked)* | Move the HUD anywhere on screen |
 | Double-click left / right half *(while unlocked)* | Test the left-ear or right-ear chime |
 | Right-click / `Enter` / `Esc` *(while unlocked)* | Lock the HUD and save its position |
 | `Ctrl + Shift + A` | Mute / unmute the chimes (remembered between runs) |
-
-There is no tray icon or close button. To quit, end `spotter_overlay.exe` in Task Manager.
 
 ## Configuration
 
@@ -87,6 +87,7 @@ There is no tray icon or close button. To quit, end `spotter_overlay.exe` in Tas
 PosX=409
 PosY=142
 Muted=0
+StartWithWindows=1
 
 [CarLengths]
 caterham caterham420r=3.35
@@ -94,6 +95,7 @@ caterham caterham420r=3.35
 
 - `PosX` / `PosY`: HUD position in screen pixels. Delete the file to reset to the screen centre and re-enter Move Mode.
 - `Muted`: `1` mutes the chimes.
+- `StartWithWindows`: `1` (default) registers the overlay under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` so it starts automatically when you sign in to Windows. Can also be toggled from the System Tray menu.
 - `[CarLengths]`: every car you drive or race against is recorded here, keyed by iRacing's `CarPath`, with the length in **metres**. Edit a value to correct a car. Values between 2.0 and 8.0 are accepted and take effect the next time a session loads.
 
 ## Supported cars

@@ -31,9 +31,13 @@ The overlay is a transparent always-on-top desktop window. Windows cannot draw a
 
 Chimes play through your Windows **default** audio output, left ear and right ear separately. Use `Ctrl + Shift + A` to mute them. There is no volume setting. Use the Windows volume mixer for the `spotter_overlay.exe` entry.
 
-### Quitting
+### System Tray & Starting with Windows
 
-There is no tray icon. End `spotter_overlay.exe` in Task Manager.
+While running, the overlay places an icon in your Windows System Tray (notification area). Click or right-click it to:
+- **Unlock / Move HUD (`Ctrl+Shift+M`)**
+- **Mute Audio Chimes (`Ctrl+Shift+A`)**
+- **Start with Windows** (enabled by default; adds/removes `iRacingSpotterOverlay` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`)
+- **Exit** (cleanly closes the overlay)
 
 ## Building from source
 
@@ -55,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\build_and_test.ps1
 
 The script:
 
-1. Finds `g++.exe`. It looks for `%TEMP%\toolchain\w64devkit\bin\g++.exe` first, then on your `PATH`.
+1. Finds `g++.exe` (checks `%LOCALAPPDATA%\toolchain\w64devkit\bin`, `%TEMP%\toolchain\w64devkit\bin`, and your system `PATH`).
 2. Builds and runs `spotter_tests.exe`. If any test fails, it stops.
 3. Builds `spotter_overlay.exe`.
 
@@ -64,13 +68,13 @@ Add `-RestartOverlay` to launch the new build when it finishes. If the overlay i
 ### Manual build
 
 ```powershell
-g++ -O2 -std=c++17 -mwindows -static spotter_overlay.cpp -o spotter_overlay.exe -luser32 -lgdi32 -lwinmm
+g++ -O2 -std=c++17 -mwindows -static spotter_overlay.cpp -o spotter_overlay.exe -luser32 -lgdi32 -lwinmm -lshell32 -ladvapi32
 ```
 
 To run only the tests:
 
 ```powershell
-g++ -O2 -std=c++17 -static spotter_tests.cpp -o spotter_tests.exe -luser32 -lgdi32 -lwinmm
+g++ -O2 -std=c++17 -static spotter_tests.cpp -o spotter_tests.exe -luser32 -lgdi32 -lwinmm -lshell32 -ladvapi32
 .\spotter_tests.exe
 ```
 
